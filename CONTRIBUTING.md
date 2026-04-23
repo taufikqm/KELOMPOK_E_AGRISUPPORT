@@ -26,7 +26,7 @@
 | **Repository** | https://github.com/taufikqm/KELOMPOK_E_AGRISUPPORT |
 | **Jira Board** | https://taufikqm.atlassian.net/jira/software/projects/AGS/boards |
 | **Sprint Aktif** | AGS Sprint 1 (13 Apr – 8 Mei 2026) |
-| **Tech Stack** | Laravel 11 + Inertia.js + React (JSX) + PostgreSQL (Supabase) |
+| **Tech Stack** | Laravel 11 + Inertia.js + React (JSX) + PostgreSQL via **Supabase** (cloud) |
 | **PM** | Taufik Qurohman |
 
 ---
@@ -69,14 +69,40 @@ DB_PASSWORD=           # ← isi dengan password database dari PM
 WEATHER_API_KEY=       # ← isi dengan API key cuaca dari PM
 ```
 
+> **ℹ️ Info Database:** Proyek ini menggunakan **Supabase** (PostgreSQL cloud).
+> Kamu **tidak perlu menginstall PostgreSQL** di komputer lokal.
+> Cukup isi `DB_PASSWORD` dan kamu langsung terhubung ke database bersama tim.
+> Host, port, username, dan nama database sudah otomatis terisi dari `.env.example`.
+
 ### 4. Siapkan Database
 
+> ⚠️ **PENTING — Baca sebelum menjalankan migrate!**
+>
+> Database dihosting di **Supabase** dan **dipakai bersama seluruh tim**.
+> Artinya:
+> - `php artisan migrate` akan langsung berdampak ke database tim lain
+> - **Jangan jalankan `migrate:fresh` atau `migrate:reset`** — ini akan menghapus data semua orang
+> - Jika kamu perlu membuat tabel/kolom baru, **buat migration baru** dan koordinasikan dulu dengan PM
+
 ```bash
-# Jalankan migrasi tabel
+# Cek apakah migration sudah up-to-date
+php artisan migrate:status
+
+# Jalankan migration yang belum dijalankan (AMAN)
 php artisan migrate
 
-# (Opsional) Isi data awal
+# Isi data awal jika diperlukan (tanya PM dulu)
 php artisan db:seed
+```
+
+**Koneksi Database Supabase (sudah terkonfigurasi di `.env.example`):**
+```
+DB_CONNECTION=pgsql
+DB_HOST=aws-1-ap-southeast-1.pooler.supabase.com
+DB_PORT=5432
+DB_DATABASE=postgres
+DB_USERNAME=postgres.tooopzwgiqcejuhhpvsj
+DB_PASSWORD=          ← isi dari PM
 ```
 
 ### 5. Jalankan Aplikasi
@@ -476,6 +502,12 @@ export default function NamaHalaman({ auth, data }) {
 ---
 
 ## FAQ
+
+**Q: Apakah saya perlu install PostgreSQL di komputer saya?**  
+A: **Tidak perlu.** Database sudah tersedia di Supabase (cloud). Cukup isi `DB_PASSWORD` di `.env` dan kamu langsung bisa konek.
+
+**Q: Boleh saya jalankan `php artisan migrate:fresh`?**  
+A: **Jangan!** Perintah ini akan menghapus seluruh tabel dan data di Supabase yang dipakai bersama tim. Cukup gunakan `php artisan migrate` untuk menjalankan migration baru.
 
 **Q: Saya tidak mengerti isi file stub, harus mulai dari mana?**  
 A: Baca komentar `// TODO` dan deskripsi `TUGAS TIM` di dalam file stub. Semua petunjuk sudah tersedia di sana. Jika masih bingung, tanya PM (Taufik).
