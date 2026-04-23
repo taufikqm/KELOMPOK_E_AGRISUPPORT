@@ -1,0 +1,44 @@
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    /**
+     * Run the migrations.
+     */
+    public function up(): void
+    {
+        Schema::create('recommendations', function (Blueprint $table) {
+            $table->id();
+            $table->string('category');
+            $table->string('title');
+            $table->text('description');
+            $table->string('urgency');
+            $table->string('color');
+            $table->jsonb('details')->nullable();
+            $table->timestamps();
+        });
+
+        Schema::create('action_logs', function (Blueprint $table) {
+            $table->id();
+            $table->foreignId('user_id')->constrained()->onDelete('cascade');
+            $table->foreignId('observation_id')->constrained('field_observations')->onDelete('cascade');
+            $table->foreignId('recommendation_id')->constrained('recommendations')->onDelete('cascade');
+            $table->string('action_type')->default('completion');
+            $table->timestamp('performed_at')->useCurrent();
+            $table->timestamps();
+        });
+    }
+
+    /**
+     * Reverse the migrations.
+     */
+    public function down(): void
+    {
+        Schema::dropIfExists('action_logs');
+        Schema::dropIfExists('recommendations');
+    }
+};
