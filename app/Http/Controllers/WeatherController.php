@@ -3,52 +3,72 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Inertia\Inertia;
 
 /**
  * ============================================================
- * STUB: WeatherController — Modul Cuaca & Prediksi
+ * AGS-33 | ST-01 — Sambungan ke Layanan Cuaca
  * ============================================================
  *
- * TUGAS TIM:
- *   Implementasikan seluruh method di bawah ini sesuai fitur
- *   Cuaca & Prediksi pada aplikasi AgriSupport.
+ * YANG PERLU DIKERJAKAN:
+ *   1. index()
+ *      - Query tabel agricultural_areas milik user yang sedang login
+ *      - Ambil koordinat setiap lahan menggunakan ST_Centroid(geometry)
+ *        → ST_Y(...) sebagai latitude, ST_X(...) sebagai longitude
+ *      - Kirim data areas ke halaman via Inertia::render('CuacaPrediksi')
  *
- * FILE TERKAIT YANG PERLU DIISI JUGA:
- *   - resources/js/Pages/CuacaPrediksi.jsx  (tampilan UI cuaca)
+ *   2. getWeather()
+ *      - Validasi parameter: lat (numeric, required), lon (numeric, required)
+ *      - Kirim request ke Open-Meteo: https://api.open-meteo.com/v1/forecast
+ *        dengan parameter:
+ *          · current  : temperature_2m, relative_humidity_2m, precipitation,
+ *                       weather_code, wind_speed_10m
+ *          · hourly   : temperature_2m, precipitation_probability, weather_code
+ *          · daily    : weather_code, temperature_2m_max, temperature_2m_min,
+ *                       precipitation_probability_max
+ *          · timezone : auto
+ *      - Jika response sukses → return response()->json($data)
+ *      - Jika koneksi gagal / API tidak merespons → return response()->json(['error' => '...'], 500)
  *
- * ROUTE YANG TERHUBUNG (routes/web.php):
- *   GET /cuaca        → index()      : halaman utama cuaca
- *   GET /api/weather  → getWeather() : endpoint JSON data cuaca
+ * ROUTE TERHUBUNG (routes/web.php):
+ *   GET /cuaca       → index()
+ *   GET /api/weather → getWeather()
  *
- * CATATAN INTEGRASI API:
- *   - Gunakan API cuaca eksternal (mis. OpenWeatherMap / BMKG)
- *   - API Key dikonfigurasi di file .env → WEATHER_API_KEY
- *   - getWeather() mengembalikan response()->json([...])
- *
- * REFERENSI PARAMETER getWeather():
- *   - lat  : latitude lokasi lahan
- *   - lon  : longitude lokasi lahan
+ * CATATAN:
+ *   Open-Meteo adalah layanan cuaca GRATIS, tidak butuh API key.
+ *   Dokumentasi: https://open-meteo.com/en/docs
  * ============================================================
  */
 class WeatherController extends Controller
 {
     /**
-     * TODO: Tampilkan halaman Cuaca & Prediksi.
-     * Gunakan Inertia::render('CuacaPrediksi', [...]).
+     * Render halaman Cuaca & Prediksi.
+     * Kirim daftar lahan milik user beserta koordinatnya ke frontend.
      */
-    public function index(Request $request)
+    public function index()
     {
-        // TODO: Implementasi di sini
+        // TODO ST-01:
+        // 1. Query agricultural_areas WHERE user_id = Auth::id()
+        // 2. SELECT id, name, location_name,
+        //           ST_Y(ST_Centroid(geometry)) as latitude,
+        //           ST_X(ST_Centroid(geometry)) as longitude
+        // 3. return Inertia::render('CuacaPrediksi', ['areas' => $areas])
     }
 
     /**
-     * TODO: Endpoint API yang mengembalikan data cuaca dalam format JSON.
-     * Ambil parameter lat & lon dari $request, fetch dari API cuaca eksternal.
-     * Return: response()->json([...])
+     * API endpoint: Ambil data cuaca dari Open-Meteo berdasarkan koordinat lahan.
+     * Dipanggil dari frontend: GET /api/weather?lat=...&lon=...
      */
     public function getWeather(Request $request)
     {
-        // TODO: Implementasi di sini
+        // TODO ST-01:
+        // 1. Validasi: lat & lon wajib ada dan harus numeric
+        // 2. Http::get('https://api.open-meteo.com/v1/forecast', [...parameter...])
+        // 3. Jika sukses → return response()->json($response->json())
+        // 4. Jika gagal  → return response()->json(['error' => 'pesan error'], status)
+        // 5. Wrap dalam try-catch untuk tangani exception koneksi
     }
 }
