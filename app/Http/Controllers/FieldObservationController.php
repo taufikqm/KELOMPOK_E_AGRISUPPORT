@@ -2,8 +2,10 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\ActionLog;
 use App\Models\AgriculturalArea;
 use App\Models\FieldObservation;
+use App\Models\Recommendation;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
@@ -12,6 +14,8 @@ use Inertia\Inertia;
 
 class FieldObservationController extends Controller
 {
+    // ------------------------------------------------------------------ ST-01
+
     public function index()
     {
         $areas = AgriculturalArea::where('user_id', Auth::id())
@@ -91,7 +95,7 @@ class FieldObservationController extends Controller
                 ];
             }
         } catch (\Exception $e) {
-            // Cuaca gagal diambil — observasi tetap tersimpan dengan data cuaca kosong
+            // Cuaca gagal diambil — observasi tersimpan dengan data cuaca kosong
         }
 
         $observation = FieldObservation::create(array_merge($validated, $weatherData, [
@@ -101,24 +105,238 @@ class FieldObservationController extends Controller
         return redirect()->route('validasi-observasi.show', $observation);
     }
 
-    // ST-02 — showValidation, showRiskAnalysis, showRecommendations, markAsCompleted
+    // ------------------------------------------------------------------ ST-02
+
     public function showValidation(FieldObservation $observation)
     {
-        // TODO: AGS-40 ST-02
+        abort_if($observation->user_id !== Auth::id(), 403);
+
+        $observation->load('agriculturalArea:id,name,soil_type');
+
+        return Inertia::render('ValidasiObservasi', [
+            'observation' => $observation,
+        ]);
     }
 
     public function showRiskAnalysis(FieldObservation $observation)
     {
-        // TODO: AGS-40 ST-02
+        abort_if($observation->user_id !== Auth::id(), 403);
+
+        $observation->load('agriculturalArea:id,name,soil_type');
+
+        return Inertia::render('AnalisisRisiko', [
+            'observation'  => $observation,
+            'riskAnalysis' => $this->calculateRisk($observation),
+        ]);
     }
 
     public function showRecommendations(FieldObservation $observation)
     {
-        // TODO: AGS-40 ST-02
+        abort_if($observation->user_id !== Auth::id(), 403);
+
+        $observation->load('agriculturalArea:id,name,soil_type');
+
+        $riskAnalysis   = $this->calculateRisk($observation);
+        $completedIds   = ActionLog::where('user_id', Auth::id())
+            ->where('observation_id', $observation->id)
+            ->pluck('recommendation_id')
+            ->all();
+
+        $disease  = $riskAnalysis['disease_name'];
+        $location = $observation->agriculturalArea->name;
+        $soilType = $observation->agriculturalArea->soil_type ?? 'umum';
+
+        $scoreByCategory = [
+            'Proteksi Tanaman' => $riskAnalysis['disease_risk']['score'],
+            'Infrastruktur'    => $riskAnalysis['flood_risk']['score'],
+            'Pemupukan'        => $riskAnalysis['drought_risk']['score'],
+            'Pencatatan'       => 0,
+        ];
+
+        $recommendations = Recommendation::all()
+            ->filter(fn($rec) => $rec->category === 'Pencatatan' || ($scoreByCategory[$rec->category] ?? 0) > 40)
+            ->map(function ($rec) use ($disease, $location, $soilType, $scoreByCategory, $completedIds) {
+                $score = $scoreByCategory[$rec->category] ?? 0;
+
+                $urgency = match(true) {
+                    $score > 75 => 'SEGERA',
+                    $score > 40 => 'TINGGI',
+                    default     => $rec->urgency,
+                };
+                $color = match($urgency) {
+                    'SEGERA' => 'red',
+                    'TINGGI' => 'amber',
+                    default  => 'green',
+                };
+
+                $replace = fn(string $text) => str_replace(
+                    ['{{disease}}', '{{location}}', '{{soil_type}}'],
+                    [$disease, $location, $soilType],
+                    $text
+                );
+
+                $details = $rec->details ?? [];
+                $steps   = array_map($replace, $details['steps'] ?? []);
+                $tools   = $details['tools'] ?? [];
+
+                return [
+                    'id'           => $rec->id,
+                    'category'     => $rec->category,
+                    'title'        => $replace($rec->title),
+                    'description'  => $replace($rec->description),
+                    'urgency'      => $urgency,
+                    'color'        => $color,
+                    'steps'        => $steps,
+                    'tools'        => $tools,
+                    'is_completed' => in_array($rec->id, $completedIds),
+                ];
+            })
+            ->sortBy(fn($rec) => match($rec['urgency']) {
+                'SEGERA'    => 0,
+                'TINGGI'    => 1,
+                'TERENCANA' => 2,
+                default     => 3,
+            })
+            ->values()
+            ->all();
+
+        return Inertia::render('RekomendasiTindakan', [
+            'observation'     => $observation,
+            'riskAnalysis'    => $riskAnalysis,
+            'recommendations' => $recommendations,
+        ]);
     }
 
     public function markAsCompleted(Request $request)
     {
-        // TODO: AGS-40 ST-02
+        $validated = $request->validate([
+            'observation_id'    => 'required|exists:field_observations,id',
+            'recommendation_id' => 'required|exists:recommendations,id',
+        ]);
+
+        $observation = FieldObservation::where('id', $validated['observation_id'])
+            ->where('user_id', Auth::id())
+            ->firstOrFail();
+
+        ActionLog::updateOrCreate(
+            [
+                'user_id'           => Auth::id(),
+                'observation_id'    => $observation->id,
+                'recommendation_id' => $validated['recommendation_id'],
+            ],
+            [
+                'action_type'  => 'completion',
+                'performed_at' => now(),
+            ]
+        );
+
+        return response()->json(['status' => 'ok']);
+    }
+
+    // ------------------------------------------------------------------ Privat
+
+    private function calculateRisk(FieldObservation $observation): array
+    {
+        $soilType = strtolower($observation->agriculturalArea->soil_type ?? '');
+
+        // Skor Kekeringan (0–100)
+        $droughtScore = match($observation->soil_moisture) {
+            'Kering'       => 80,
+            'Normal'       => 40,
+            'Lembab'       => 20,
+            'Sangat Basah' => 5,
+            default        => 40,
+        };
+        if (str_contains($soilType, 'regosol'))               $droughtScore += 15;
+        if (($observation->weather_soil_moisture ?? 1) < 0.1) $droughtScore += 20;
+        elseif (($observation->weather_soil_moisture ?? 0) > 0.3) $droughtScore -= 20;
+        if (($observation->weather_precip_mm ?? 0) > 10)      $droughtScore -= 15;
+        $droughtScore = max(0, min(100, $droughtScore));
+
+        // Skor Genangan (0–100)
+        $floodScore = match($observation->water_puddle) {
+            'Tidak Ada' => 5,
+            'Sedikit'   => 30,
+            'Sedang'    => 60,
+            'Banyak'    => 85,
+            default     => 5,
+        };
+        if (str_contains($soilType, 'aluvial'))            $floodScore += 15;
+        if (($observation->weather_precip_mm ?? 0) > 15)   $floodScore += 25;
+        elseif (($observation->weather_precip_mm ?? 0) > 5) $floodScore += 10;
+        if ($observation->soil_moisture === 'Sangat Basah') $floodScore += 10;
+        $floodScore = max(0, min(100, $floodScore));
+
+        // Skor Penyakit (0–100)
+        $diseaseScore = match($observation->disease_indication) {
+            'Tidak Ada' => 5,
+            'Ringan'    => 30,
+            'Sedang'    => 60,
+            'Berat'     => 90,
+            default     => 5,
+        };
+        $diseaseName = 'Hama Umum';
+        $temp        = $observation->weather_temp ?? 0;
+        $humidity    = $observation->weather_humidity ?? 0;
+        $precip      = $observation->weather_precip_mm ?? 0;
+
+        if (str_contains($soilType, 'andosol') && $temp >= 15 && $temp <= 22 && $humidity > 90) {
+            $diseaseScore += 20;
+            $diseaseName = 'Hawar Daun';
+        } elseif (str_contains($soilType, 'aluvial') && (in_array($observation->water_puddle, ['Sedang', 'Banyak']) || $precip > 15)) {
+            $diseaseScore += 20;
+            $diseaseName = 'Blas & Busuk Akar';
+        } elseif (str_contains($soilType, 'podsolik') && $observation->soil_moisture === 'Sangat Basah') {
+            $diseaseScore += 15;
+            $diseaseName = 'Akar Gada';
+        } elseif ((str_contains($soilType, 'latosol') || str_contains($soilType, 'grumusol')) && $observation->soil_moisture === 'Sangat Basah') {
+            $diseaseScore += 15;
+            $diseaseName = 'Layu Fusarium';
+        }
+        $diseaseScore = max(0, min(100, $diseaseScore));
+
+        $overallScore = (int) round(($droughtScore + $floodScore + $diseaseScore) / 3);
+        $levelLabel   = fn(int $s) => match(true) {
+            $s >= 75 => 'Kritis',
+            $s >= 50 => 'Tinggi',
+            $s >= 25 => 'Sedang',
+            default  => 'Rendah',
+        };
+
+        return [
+            'drought_risk' => [
+                'score'       => $droughtScore,
+                'level'       => $levelLabel($droughtScore),
+                'description' => 'Risiko kekurangan air pada lahan',
+            ],
+            'flood_risk' => [
+                'score'       => $floodScore,
+                'level'       => $levelLabel($floodScore),
+                'description' => 'Risiko genangan atau banjir pada lahan',
+            ],
+            'disease_risk' => [
+                'score'       => $diseaseScore,
+                'level'       => $levelLabel($diseaseScore),
+                'description' => 'Risiko serangan penyakit tanaman',
+            ],
+            'overall_risk_score' => $overallScore,
+            'overall_risk_level' => $levelLabel($overallScore),
+            'analysis_summary'   => $this->buildSummary($droughtScore, $floodScore, $diseaseScore, $observation->agriculturalArea->name),
+            'disease_name'       => $diseaseName,
+        ];
+    }
+
+    private function buildSummary(int $drought, int $flood, int $disease, string $areaName): string
+    {
+        $parts = [];
+        if ($drought >= 50) $parts[] = 'risiko kekeringan yang perlu diwaspadai';
+        if ($flood   >= 50) $parts[] = 'potensi genangan air yang cukup tinggi';
+        if ($disease >= 50) $parts[] = 'indikasi serangan penyakit tanaman';
+
+        if (empty($parts)) {
+            return "Kondisi lahan {$areaName} secara umum baik. Tetap lakukan pemantauan rutin untuk menjaga produktivitas.";
+        }
+
+        return 'Lahan ' . $areaName . ' menunjukkan ' . implode(', ', $parts) . '. Segera tinjau rekomendasi tindakan untuk penanganan yang tepat.';
     }
 }
