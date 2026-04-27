@@ -2,106 +2,123 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\FieldObservation;
 use App\Models\AgriculturalArea;
-use App\Models\Recommendation;
+use App\Models\FieldObservation;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Inertia\Inertia;
 
-/**
- * ============================================================
- * STUB: FieldObservationController — Modul Input Kondisi Lapangan
- * ============================================================
- *
- * TUGAS TIM:
- *   Implementasikan seluruh method di bawah ini sesuai fitur
- *   Input Kondisi Lapangan & Analisis Risiko AgriSupport.
- *
- * FILE TERKAIT YANG PERLU DIISI JUGA:
- *   - resources/js/Pages/InputKondisi.jsx            (form input kondisi)
- *   - resources/js/Pages/ValidasiObservasi.jsx       (halaman validasi)
- *   - resources/js/Pages/AnalisisRisiko.jsx          (hasil analisis risiko)
- *   - resources/js/Pages/RekomendasiTindakan.jsx     (rekomendasi tindakan)
- *
- * MODEL YANG DIGUNAKAN:
- *   - App\Models\FieldObservation
- *   - App\Models\AgriculturalArea
- *   - App\Models\Recommendation
- *
- * ROUTE YANG TERHUBUNG (routes/web.php):
- *   GET  /input-kondisi                              → index()
- *   POST /input-kondisi                              → store()
- *   GET  /validasi-observasi/{observation}           → showValidation()
- *   GET  /analisis-risiko/{observation}              → showRiskAnalysis()
- *   GET  /analisis-risiko/{observation}/rekomendasi  → showRecommendations()
- *   POST /rekomendasi/mark-completed                 → markAsCompleted()
- *
- * REFERENSI STRUKTUR DATA (tabel field_observations):
- *   - agricultural_area_id : FK      — wilayah lahan terkait
- *   - observation_date     : date    — tanggal observasi
- *   - rainfall             : decimal — curah hujan (mm)
- *   - temperature          : decimal — suhu (°C)
- *   - humidity             : decimal — kelembaban (%)
- *   - flood_risk_level     : enum    — low / medium / high
- *   - drought_risk_level   : enum    — low / medium / high
- *   - notes                : text    — catatan tambahan
- * ============================================================
- */
 class FieldObservationController extends Controller
 {
-    /**
-     * TODO: Tampilkan halaman form input kondisi lapangan.
-     * Sertakan daftar wilayah lahan milik user untuk dropdown.
-     * Gunakan Inertia::render('InputKondisi', [...]).
-     */
-    public function index(Request $request)
+    public function index()
     {
-        // TODO: Implementasi di sini
+        $areas = AgriculturalArea::where('user_id', Auth::id())
+            ->get(['id', 'name', 'soil_type']);
+
+        $recentObservations = FieldObservation::where('user_id', Auth::id())
+            ->with('agriculturalArea:id,name')
+            ->orderByDesc('observation_date')
+            ->take(10)
+            ->get();
+
+        return Inertia::render('InputKondisi', [
+            'areas'              => $areas,
+            'recentObservations' => $recentObservations,
+        ]);
     }
 
-    /**
-     * TODO: Simpan data observasi lapangan baru ke database.
-     * Lakukan validasi input & hitung level risiko secara otomatis.
-     * Redirect ke showValidation() setelah berhasil.
-     */
     public function store(Request $request)
     {
-        // TODO: Implementasi di sini
+        $validated = $request->validate([
+            'agricultural_area_id' => 'required|exists:agricultural_areas,id',
+            'observation_date'     => 'required|date',
+            'planting_cycle'       => 'nullable|string|max:100',
+            'soil_moisture'        => 'required|in:Kering,Normal,Lembab,Sangat Basah',
+            'water_puddle'         => 'required|in:Tidak Ada,Sedikit,Sedang,Banyak',
+            'crop_condition'       => 'required|in:Kritis,Kurang Baik,Baik,Sangat Baik',
+            'pest_indication'      => 'required|in:Tidak Ada,Ringan,Sedang,Berat',
+            'disease_indication'   => 'required|in:Tidak Ada,Ringan,Sedang,Berat',
+            'notes'                => 'nullable|string|max:1000',
+        ]);
+
+        $area = AgriculturalArea::where('id', $validated['agricultural_area_id'])
+            ->where('user_id', Auth::id())
+            ->firstOrFail();
+
+        // Ambil koordinat centroid lahan dari PostGIS
+        $centroid = DB::selectOne(
+            'SELECT ST_Y(ST_Centroid(geometry::geometry)) AS lat,
+                    ST_X(ST_Centroid(geometry::geometry)) AS lon
+             FROM agricultural_areas WHERE id = ?',
+            [$area->id]
+        );
+
+        if (! $centroid || ! $centroid->lat || ! $centroid->lon) {
+            return back()->withErrors([
+                'agricultural_area_id' => 'Lahan ini belum memiliki lokasi peta. Tambahkan lokasi di menu Wilayah Lahan terlebih dahulu.',
+            ])->withInput();
+        }
+
+        // Ambil snapshot cuaca dari Open-Meteo — jika gagal, observasi tetap tersimpan
+        $weatherData = [
+            'weather_temp'          => null,
+            'weather_condition'     => null,
+            'weather_humidity'      => null,
+            'weather_wind_kph'      => null,
+            'weather_precip_mm'     => null,
+            'weather_soil_moisture' => null,
+        ];
+
+        try {
+            $response = Http::timeout(5)->get('https://api.open-meteo.com/v1/forecast', [
+                'latitude'  => $centroid->lat,
+                'longitude' => $centroid->lon,
+                'current'   => 'temperature_2m,relative_humidity_2m,precipitation,wind_speed_10m,weather_code,soil_moisture_0_to_1cm',
+                'timezone'  => 'Asia/Jakarta',
+            ]);
+
+            if ($response->successful()) {
+                $current = $response->json('current', []);
+                $weatherData = [
+                    'weather_temp'          => $current['temperature_2m'] ?? null,
+                    'weather_condition'     => isset($current['weather_code']) ? (string) $current['weather_code'] : null,
+                    'weather_humidity'      => $current['relative_humidity_2m'] ?? null,
+                    'weather_wind_kph'      => $current['wind_speed_10m'] ?? null,
+                    'weather_precip_mm'     => $current['precipitation'] ?? null,
+                    'weather_soil_moisture' => $current['soil_moisture_0_to_1cm'] ?? null,
+                ];
+            }
+        } catch (\Exception $e) {
+            // Cuaca gagal diambil — observasi tetap tersimpan dengan data cuaca kosong
+        }
+
+        $observation = FieldObservation::create(array_merge($validated, $weatherData, [
+            'user_id' => Auth::id(),
+        ]));
+
+        return redirect()->route('validasi-observasi.show', $observation);
     }
 
-    /**
-     * TODO: Tampilkan halaman validasi hasil observasi.
-     * Gunakan Inertia::render('ValidasiObservasi', [...]).
-     */
+    // ST-02 — showValidation, showRiskAnalysis, showRecommendations, markAsCompleted
     public function showValidation(FieldObservation $observation)
     {
-        // TODO: Implementasi di sini
+        // TODO: AGS-40 ST-02
     }
 
-    /**
-     * TODO: Tampilkan halaman analisis risiko dari observasi.
-     * Gunakan Inertia::render('AnalisisRisiko', [...]).
-     */
     public function showRiskAnalysis(FieldObservation $observation)
     {
-        // TODO: Implementasi di sini
+        // TODO: AGS-40 ST-02
     }
 
-    /**
-     * TODO: Tampilkan halaman rekomendasi tindakan.
-     * Gunakan Inertia::render('RekomendasiTindakan', [...]).
-     */
     public function showRecommendations(FieldObservation $observation)
     {
-        // TODO: Implementasi di sini
+        // TODO: AGS-40 ST-02
     }
 
-    /**
-     * TODO: Tandai rekomendasi sebagai selesai.
-     * Terima id rekomendasi dari request, update status di database.
-     */
     public function markAsCompleted(Request $request)
     {
-        // TODO: Implementasi di sini
+        // TODO: AGS-40 ST-02
     }
 }
