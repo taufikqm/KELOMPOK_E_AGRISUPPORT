@@ -21,6 +21,9 @@
 Homestead.json
 Homestead.yaml
 Thumbs.db
+<<<<<<< HEAD
+=======
 
 # Switch scripts (local only)
+>>>>>>> origin/master
 switch-*.ps1
